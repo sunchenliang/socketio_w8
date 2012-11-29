@@ -11,20 +11,21 @@ namespace SocketIOClient
 		
 		//public string Message { get; set; }
 		public Exception Exception { get; set; }
-        public WebErrorStatus ErrorStatus { get; set; }
+        public string Message { get; set; }
 
-        public ErrorEventArgs(WebErrorStatus webErrorStatus)
+       
+        public ErrorEventArgs(string message)
             : base()
-		{
-            this.ErrorStatus = webErrorStatus;
-		}
-        public ErrorEventArgs(WebErrorStatus webErrorStatus, Exception exception)
-            : base()
-		{
-            this.ErrorStatus = webErrorStatus;
-			this.Exception = exception;
-		}
+        {
+            this.Message = message;
+        }
 
+        public ErrorEventArgs(string message, Exception exception)
+            : base()
+        {
+            this.Message = message;
+            this.Exception = exception;
+        }
 
 	}
 }

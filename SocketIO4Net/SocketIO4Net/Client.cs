@@ -27,8 +27,6 @@ namespace SocketIOClient
         private ThreadPoolTimer socketHeartBeatTimer; // HeartBeat timer 
         private Task dequeuOutBoundMsgTask;
         private BlockingCollection<string> outboundQueue;
-        private int retryConnectionCount = 0;
-        private int retryConnectionAttempts = 3;
         private readonly static object padLock = new object(); // allow one connection attempt at a time
 
         /// <summary>
@@ -53,7 +51,6 @@ namespace SocketIOClient
         /// </summary>
         public event EventHandler Opened;
         public event EventHandler<MessageEventArgs> Message;
-        public event EventHandler ConnectionRetryAttempt;
         public event EventHandler HeartBeatTimerEvent;
         /// <summary>
         /// <para>The underlying websocket connection has closed (unexpectedly)</para>
@@ -75,7 +72,8 @@ namespace SocketIOClient
 
 
 
-        public WebErrorStatus LastWebErrorStatus;
+        
+        private string LastWebErrorMessage;
 
         /// <summary>
         /// Represents the initial handshake parameters received from the socket.io service (SID, HeartbeatTimeout etc)
@@ -128,7 +126,6 @@ namespace SocketIOClient
                     if (this.HandShake == null || string.IsNullOrWhiteSpace(this.HandShake.SID) || this.HandShake.HadError)
                     {
                         Debug.WriteLine("Error initializing handshake with {0}", uri.ToString());
-                        this.OnErrorEvent(this, new ErrorEventArgs(this.LastWebErrorStatus, new Exception()));
                     }
                     else
                     {
@@ -149,7 +146,7 @@ namespace SocketIOClient
                     this.mwsState = WebSocketState.Closed;
                     Debug.WriteLine(string.Format("Connect threw an exception...{0}", ex.GetBaseException().HResult));
                     WebErrorStatus status = WebSocketError.GetStatus(ex.GetBaseException().HResult);
-                    this.OnErrorEvent(this, new ErrorEventArgs(status, ex));
+                    this.OnErrorEvent(this, new ErrorEventArgs(status.ToString(), ex));
 
                 }
             }
@@ -163,8 +160,9 @@ namespace SocketIOClient
             {
                 websocket.Dispose();
             }
+            //if(this.mwsState == WebSocketState.Closing)
+                this.OnSocketConnectionClosedEvent(this, EventArgs.Empty);
             this.mwsState = WebSocketState.Closed;
-            this.OnSocketConnectionClosedEvent(this, EventArgs.Empty);
 
         }
 
@@ -216,10 +214,11 @@ namespace SocketIOClient
             }
             catch (Exception ex) // For debugging
             {
+                this.mwsState = WebSocketState.Closed;
                 WebErrorStatus status = WebSocketError.GetStatus(ex.GetBaseException().HResult);
                 Debug.WriteLine("mws_MessageReceived::exception : " + status);
-                this.OnErrorEvent(this, new ErrorEventArgs(status, ex));
-                this.Close();
+                this.OnErrorEvent(this, new ErrorEventArgs(status.ToString(), ex));
+                //this.Close();
             }
         }
 
@@ -352,7 +351,6 @@ namespace SocketIOClient
         public void Close()
         {
             this.mwsState = WebSocketState.Closing;
-            this.retryConnectionCount = 0; // reset for next connection cycle
             // stop the heartbeat time
             this.closeHeartBeatTimer();
 
@@ -397,7 +395,7 @@ namespace SocketIOClient
                 //this.mws.Closed -= this.mws_Closed;
                 //this.mws.MessageReceived -= this.mws_MessageReceived;
 
-                if (this.mwsState == WebSocketState.Connecting || this.mwsState == WebSocketState.Connected)
+                if (this.mwsState != WebSocketState.Closed)
                 {
                     try { this.mws.Close(1000, ""); }
                     catch { Debug.WriteLine("exception raised trying to close websocket: can safely ignore, socket is being closed"); }
@@ -409,7 +407,6 @@ namespace SocketIOClient
         private void mws_OpenEvent()
         {
             this.socketHeartBeatTimer = ThreadPoolTimer.CreatePeriodicTimer(OnHeartBeatTimerCallback, HandShake.HeartbeatInterval);
-
             this.ConnectionOpenEvent.Set();
 
             this.OnMessageEvent(new EventMessage() { Event = "open" });
@@ -423,13 +420,12 @@ namespace SocketIOClient
 
         protected void OnErrorEvent(object sender, ErrorEventArgs e)
         {
-            this.LastWebErrorStatus = e.ErrorStatus;
             if (this.Error != null)
             {
                 try { this.Error.Invoke(this, e); }
                 catch { }
             }
-            Debug.WriteLine(string.Format("Error Event: {0}\r\n\t{1}", e.ErrorStatus.ToString(), e.Exception));
+            Debug.WriteLine(string.Format("Error Event: {0}\r\n\t{1}", e.Message, e.Exception));
         }
         protected void OnSocketConnectionClosedEvent(object sender, EventArgs e)
         {
@@ -454,7 +450,7 @@ namespace SocketIOClient
                         this.outboundQueue.Add(msg.Encoded);
                         if (this.HeartBeatTimerEvent != null)
                         {
-                            this.HeartBeatTimerEvent.BeginInvoke(this, EventArgs.Empty, EndAsyncEvent, null);
+                            this.HeartBeatTimerEvent.BeginInvoke(this, EventArgs.Empty, null, null);
                         }
                     }
                 }
@@ -465,21 +461,7 @@ namespace SocketIOClient
                 }
             }
         }
-        private void EndAsyncEvent(IAsyncResult result)
-        {
-            //var ar = (System.Runtime.Remoting.Messaging.AsyncResult)result;
-            //var invokedMethod = (EventHandler)ar.AsyncDelegate;
-
-            //try
-            //{
-            //    invokedMethod.EndInvoke(result);
-            //}
-            //catch
-            //{
-            //    // Handle any exceptions that were thrown by the invoked method
-            //    Debug.WriteLine("An event listener went kaboom!");
-            //}
-        }
+      
         /// <summary>
         /// While connection is open, dequeue and send messages to the socket server
         /// </summary>
@@ -553,8 +535,7 @@ namespace SocketIOClient
                 catch (Exception ex)
                 {
                     errorText = string.Format("Error getting handsake from Socket.IO host instance: {0}", ex.Message);
-                    this.LastWebErrorStatus = WebSocketError.GetStatus(ex.GetBaseException().HResult);
-                    //this.OnErrorEvent(this, new ErrorEventArgs(errMsg));
+                    this.OnErrorEvent(this, new ErrorEventArgs(ex.Message, ex));
                 }
             }
             if (string.IsNullOrEmpty(errorText))
